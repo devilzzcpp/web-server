@@ -57,7 +57,7 @@ func handleConnection(conn net.Conn) {
 		}
 	}
 
-	parts := strings.Split(requestLine, " ") //делит строку
+	parts := strings.Fields(requestLine) //делит строку
 	if len(parts) < 2 {
 		fmt.Println("invalid request")
 		return
@@ -65,11 +65,12 @@ func handleConnection(conn net.Conn) {
 
 	method := parts[0]
 	path := parts[1]
+	version := parts[2]
 
-	body := fmt.Sprintf("<html><body><h1>Hello! chuvak %s with %s</h1></body></html>", path, method) //создаем строку (тело ответа)
+	body := fmt.Sprintf("<html><body><h1>Hello! Method: %s  Path: %s  Version: %s</h1></body></html>", method, path, version) //создаем строку (тело ответа)
 
 	response := "HTTP/1.1 200 OK\r\n" +
-		"Content-Type: text/html\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
 		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
 		"\r\n" +
 		body
