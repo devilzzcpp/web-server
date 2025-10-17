@@ -1,29 +1,39 @@
 package config
 
 import (
-	"encoding/json"
 	"os"
+	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	Host string
+	Port int
 }
 
 // loadCfg загружает конфигурацию из файла
 func LoadCfg() (*Config, error) {
 
-	// открываем файл кфг
-	file, err := os.Open("config.json")
+	_ = godotenv.Load() //подгружает env
+
+	cfg := &Config{}
+
+	host := os.Getenv("HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	cfg.Host = host
+
+	portStr := os.Getenv("PORT")
+	if portStr == "" {
+		portStr = "8888"
+	}
+	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	cfg.Port = port
 
-	//декодирование
-	cfg := &Config{}
-	if err := json.NewDecoder(file).Decode(cfg); err != nil {
-		return nil, err
-	}
 	return cfg, nil
 }
