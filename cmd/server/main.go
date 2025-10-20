@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"web-server/internal/config"
 	"web-server/internal/server"
+	"web-server/internal/storage"
 )
 
 func main() {
@@ -15,5 +16,9 @@ func main() {
 
 	fmt.Printf("запуск сервера %s:%d\n", cfg.Host, cfg.Port)
 
-	server.Start(cfg)
+	storage := storage.NewStorage()
+	storage.SeedUsers()
+
+	server.Start(cfg, storage)
+
 }
