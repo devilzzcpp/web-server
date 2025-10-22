@@ -8,141 +8,213 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"web-server/internal/config"
 	"web-server/internal/model"
 	"web-server/internal/storage"
+	"web-server/pkg/logger"
 )
 
-func HandleConnection(conn net.Conn, storage *storage.Storage) {
+type Request struct {
+	Method  string
+	Path    string
+	Version string
+	Query   map[string]string
+	Body    []byte
+}
 
+// parseRequest читает HTTP-запрос из conn и возвращает Request
+func parseRequest(conn net.Conn) (*Request, error) {
 	reader := bufio.NewReader(conn)
-	requestLine, err := reader.ReadString('\n') //читает строку запроса
+
+	// читаем первую строку запроса
+	line, err := reader.ReadString('\n')
 	if err != nil {
-		fmt.Println("err read", err)
-		return
+		return nil, fmt.Errorf("failed to read request line: %w", err)
+	}
+	line = strings.TrimSpace(line)
+	parts := strings.Fields(line)
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("invalid request line: %s", line)
 	}
 
-	requestLine = strings.TrimSpace(requestLine)
-	fmt.Println("Received:", requestLine)
+	req := &Request{
+		Method:  parts[0],
+		Path:    parts[1],
+		Version: parts[2],
+		Query:   make(map[string]string),
+	}
 
-	// читаем заголовки до пустой строки
+	// читаем заголовки и ищем Content-Length
+	contentLength := 0
 	for {
-		line, err := reader.ReadString('\n')
+		hline, err := reader.ReadString('\n')
 		if err != nil {
-			fmt.Println("err read header:", err)
-			return
+			return nil, fmt.Errorf("failed to read header line: %w", err)
 		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			break
+		hline = strings.TrimSpace(hline)
+		if hline == "" {
+			break // конец заголовков
+		}
+
+		if strings.HasPrefix(strings.ToLower(hline), "content-length:") {
+			clStr := strings.TrimSpace(hline[15:])
+			contentLength, _ = strconv.Atoi(clStr)
 		}
 	}
 
-	parts := strings.Fields(requestLine) //делит строку
-	if len(parts) != 3 {
-		fmt.Println("invalid request")
+	// читаем тело ровно contentLength байт
+	if contentLength > 0 {
+		body := make([]byte, contentLength)
+		_, err := io.ReadFull(reader, body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read body: %w", err)
+		}
+		req.Body = body
+	}
+
+	// парсим query-параметры
+	if idx := strings.Index(req.Path, "?"); idx != -1 {
+		rawQuery := req.Path[idx+1:]
+		req.Path = req.Path[:idx]
+		for _, pair := range strings.Split(rawQuery, "&") {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) == 2 {
+				req.Query[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	return req, nil
+}
+
+// HandleConnection обрабатывает одно TCP соединение
+func HandleConnection(conn net.Conn, store *storage.Storage, cfg *config.Config) {
+	defer conn.Close()
+
+	logger.Log.Info("новое подключение", "address", conn.RemoteAddr())
+	req, err := parseRequest(conn)
+	if err != nil {
+		logger.Log.Error("ошибка парсинга запроса", "error", err)
+		sendStatus(conn, 400)
 		return
 	}
 
-	method := parts[0]
-	path := parts[1]
-	version := parts[2]
+	logger.Log.Info("получен запрос", "method", req.Method, "path", req.Path, "query", req.Query)
 
-	fmt.Printf("Method=%s, Path=%s, Version=%s\n", method, path, version)
+	base := cfg.ApiBasePath
 
-	if method == "GET" && strings.HasPrefix(path, "/api/v1/users") {
-		role := ""
-		if idx := strings.Index(path, "?"); idx != -1 {
-			role = path[idx+1:]
-		}
+	switch {
 
+	case req.Method == "GET" && req.Path == base+"/users":
+		role := req.Query["role"]
 		var users []model.User
 		if role == "" {
-			users = storage.GetUsers()
+			users = store.GetUsers()
+			logger.Log.Info("получены все пользователи")
 		} else {
-			users = storage.GetUsersByRole(role)
+			users = store.GetUsersByRole(role)
+			logger.Log.Info("получены пользователи по роли", "role", role)
 		}
-
-		body, _ := json.Marshal(users)
-
-		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s", len(body), string(body))
-		conn.Write([]byte(response))
+		sendJSON(conn, 200, users)
 		return
-	}
 
-	if method == "POST" && path == "/api/v1/users" {
-		body, _ := io.ReadAll(reader)
-		var user model.User
-		json.Unmarshal(body, &user)
-
-		newUser := storage.CreateUser(user)
-		respByte, _ := json.Marshal(newUser)
-
-		response := fmt.Sprintf("HTTP/1.1 201 Created\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s", len(respByte), string(respByte))
-		conn.Write([]byte(response))
-		return
-	}
-
-	if method == "PUT" && strings.HasPrefix(path, "/api/v1/users/") {
-		strId := strings.TrimPrefix(path, "/api/v1/users/")
-
-		id, err := strconv.Atoi(strId)
+	case req.Method == "GET" && strings.HasPrefix(req.Path, base+"/users/"):
+		idStr := strings.TrimPrefix(req.Path, base+"/users/")
+		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"))
+			logger.Log.Warn("некорректный ID пользователя", "error", err)
+			sendStatus(conn, 400)
 			return
 		}
-
-		body, _ := io.ReadAll(reader)
-		var user model.User
-		json.Unmarshal(body, &user)
-
-		updUser, ok := storage.UpdateUser(id, user)
+		user, ok := store.GetUser(id)
 		if !ok {
-			conn.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"))
+			logger.Log.Warn("пользователь не найден", "id", id)
+			sendStatus(conn, 404)
 			return
 		}
-
-		respByte, _ := json.Marshal(updUser)
-		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s", len(respByte), string(respByte))
-		conn.Write([]byte(response))
+		logger.Log.Info("пользователь найден", "id", id)
+		sendJSON(conn, 200, user)
 		return
-	}
 
-	if method == "DELETE" && strings.HasPrefix(path, "/api/v1/users/") {
-		strID := strings.TrimPrefix(path, "/api/v1/users/")
-		id, err := strconv.Atoi(strID)
+	case req.Method == "POST" && req.Path == base+"/users":
+		var u model.User
+		if err := json.Unmarshal(req.Body, &u); err != nil {
+			logger.Log.Warn("некорректное тело запроса", "error", err)
+			sendStatus(conn, 400)
+			return
+		}
+		u.ID = 0
+		newUser := store.CreateUser(u)
+		sendJSON(conn, 201, newUser)
+		return
+
+	case req.Method == "PUT" && strings.HasPrefix(req.Path, base+"/users/"):
+		idStr := strings.TrimPrefix(req.Path, base+"/users/")
+		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"))
+			logger.Log.Warn("некорректный ID пользователя", "error", err)
+			sendStatus(conn, 400)
 			return
 		}
-
-		ok := storage.DeleteUser(id)
+		var u model.User
+		if err := json.Unmarshal(req.Body, &u); err != nil {
+			logger.Log.Warn("некорректное тело запроса", "error", err)
+			sendStatus(conn, 400)
+			return
+		}
+		updatedUser, ok := store.UpdateUser(id, u)
 		if !ok {
-			conn.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"))
+			logger.Log.Warn("пользователь не найден", "id", id)
+			sendStatus(conn, 404)
 			return
 		}
-
-		conn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+		logger.Log.Info("пользователь обновлен", "id", id)
+		sendJSON(conn, 200, updatedUser)
 		return
-	}
 
-	if method == "GET" && strings.HasPrefix(path, "/api/v1/users/") {
-		strID := strings.TrimPrefix(path, "/api/v1/users/")
-		id, err := strconv.Atoi(strID)
+	case req.Method == "DELETE" && strings.HasPrefix(req.Path, base+"/users/"):
+		idStr := strings.TrimPrefix(req.Path, base+"/users/")
+		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"))
+			logger.Log.Warn("некорректный ID пользователя", "error", err)
+			sendStatus(conn, 400)
 			return
 		}
-
-		user, ok := storage.GetUser(id)
-		if !ok {
-			conn.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"))
+		if !store.DeleteUser(id) {
+			logger.Log.Warn("пользователь не найден", "id", id)
+			sendStatus(conn, 404)
 			return
 		}
-
-		respByte, _ := json.Marshal(user)
-		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s", len(respByte), string(respByte))
-		conn.Write([]byte(response))
+		logger.Log.Info("пользователь удален", "id", id)
+		sendStatus(conn, 204)
 		return
+
+	default:
+		logger.Log.Warn("неизвестный метод или путь", "method", req.Method, "path", req.Path)
+		sendStatus(conn, 404)
 	}
 
+	logger.Log.Info("обработка запроса завершена", "address", conn.RemoteAddr())
+}
+
+// sendJSON отправляет JSON с указанным статусом
+func sendJSON(conn net.Conn, status int, data interface{}) {
+	body, _ := json.Marshal(data)
+	resp := fmt.Sprintf(
+		"HTTP/1.1 %d OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
+		status, len(body), string(body),
+	)
+	conn.Write([]byte(resp))
+
+	logger.Log.Debug("отправлен JSON-ответ",
+		"status", status,
+		"length", len(body),
+		"address", conn.RemoteAddr(),
+	)
+}
+
+// sendStatus отправляет пустой ответ с кодом состояния
+func sendStatus(conn net.Conn, status int) {
+	resp := fmt.Sprintf("HTTP/1.1 %d\r\nContent-Length: 0\r\n\r\n", status)
+	conn.Write([]byte(resp))
 }

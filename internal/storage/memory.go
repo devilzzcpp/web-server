@@ -3,6 +3,7 @@ package storage
 import (
 	"sync"
 	"web-server/internal/model"
+	"web-server/pkg/logger"
 )
 
 type Storage struct {
@@ -25,6 +26,13 @@ func (m *Storage) CreateUser(user model.User) model.User {
 	user.ID = m.nextID
 	m.nextID++
 	m.users[user.ID] = user
+
+	logger.Log.Info("создан новый пользователь",
+		"id", user.ID,
+		"username", user.Username,
+		"role", user.Role,
+	)
+
 	return user
 }
 
@@ -51,10 +59,17 @@ func (m *Storage) UpdateUser(id int, user model.User) (model.User, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.users[id]; !ok {
+	existing, ok := m.users[id]
+	if !ok {
 		return model.User{}, false
 	}
+	user.ID = existing.ID
 	m.users[id] = user
+	logger.Log.Info("обновлен пользователь",
+		"id", id,
+		"username", user.Username,
+		"role", user.Role,
+	)
 	return user, true
 }
 
@@ -66,6 +81,7 @@ func (m *Storage) DeleteUser(id int) bool {
 		return false
 	}
 	delete(m.users, id)
+	logger.Log.Info("удален пользователь", "id", id)
 	return true
 }
 
