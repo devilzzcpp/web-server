@@ -37,6 +37,63 @@ go build -o web-server ./cmd/web-server
 
 Сервер будет доступен по адресу HOST:PORT, указанному в `.env`.
 
+### Запуск в Docker
+
+Если вы предпочитаете контейнеры, в репозитории есть `Dockerfile` и `docker-compose.yml`. Ниже — два варианта запуска: минимальный (docker build + run) и рекомендуемый (docker-compose).
+
+Минимальный (быстро, через Docker CLI):
+```bash
+# Собрать образ (в корне проекта, где находится Dockerfile)
+docker build -t web-server:latest .
+
+# Запустить контейнер (использует .env в корне)
+docker run --rm --env-file .env -p 8888:8888 --name web-server web-server:latest
+
+# В фоне
+docker run -d --env-file .env -p 8888:8888 --name web-server web-server:latest
+
+# Если хотите сохранять логи на хосте (bind-mount)
+docker run -d --env-file .env -p 8888:8888 \
+	-v "$(pwd)/server.log:/app/server.log" \
+	--name web-server web-server:latest
+
+# Просмотр логов контейнера
+docker logs -f web-server
+```
+
+Рекомендуемый (docker-compose):
+
+```yaml
+version: "3.8"
+services:
+	web:
+		build: .
+		image: web-server:latest
+		env_file:
+			- .env
+		ports:
+			- "${PORT:-8888}:8888"
+		volumes:
+			- ./server.log:/app/server.log   # опционально: сохранять логи на хосте
+		restart: unless-stopped
+```
+
+Команды:
+```bash
+# Собрать и запустить
+docker-compose up --build
+
+# В фоне
+docker-compose up -d --build
+
+# Остановить и удалить
+docker-compose down
+```
+
+Заметка по `HOST` в `.env`:
+
+Если в `.env` указано `HOST=127.0.0.1`, сервис внутри контейнера может быть недоступен извне — контейнеру обычно нужно слушать на `0.0.0.0`. Рекомендуется либо не задавать `HOST` в `.env`, либо установить `HOST=0.0.0.0` перед запуском в контейнере.
+
 ---
 
 ## API
@@ -94,6 +151,7 @@ time=2025-10-22T14:50:58.011+04:00 level=INFO msg="получен запрос" 
 - cmd/web-server — точка входа (main).  
 - internal — логика приложения, HTTP-парсер, обработчики.  
 - pkg — общие утилиты (логи, конфиг).  
+- logs — директория для хранения логов.  
 - scripts — вспомогательные скрипты (test_api.sh).
 
 ---
