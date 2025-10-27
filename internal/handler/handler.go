@@ -25,7 +25,10 @@ type Request struct {
 // parseRequest читает HTTP-запрос из conn и возвращает Request
 func parseRequest(conn net.Conn) (*Request, error) {
 	reader := bufio.NewReader(conn)
-
+	//fmt.Print("строка запроса", string(reader))
+	// fmt.Println("zhopa")
+	// b, _ := reader.Peek(512) // возвращает []byte, не потребляя их
+	// fmt.Println(string(b))
 	// читаем первую строку запроса
 	line, err := reader.ReadString('\n')
 	if err != nil {
@@ -37,42 +40,65 @@ func parseRequest(conn net.Conn) (*Request, error) {
 		return nil, fmt.Errorf("invalid request line: %s", line)
 	}
 
+	version := parts[2]
+	if version != "HTTP/1.1" && version != "HTTP/1.0" {
+		return nil, fmt.Errorf(" неподдерживаемая версия HTTP: %s", version)
+	}
+
 	req := &Request{
 		Method:  parts[0],
 		Path:    parts[1],
-		Version: parts[2],
+		Version: version,
 		Query:   make(map[string]string),
 	}
 
 	// читаем заголовки и ищем Content-Length
 	contentLength := 0
+	fmt.Println("Headers:")
 	for {
 		hline, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, fmt.Errorf("failed to read header line: %w", err)
 		}
-		hline = strings.TrimSpace(hline)
+		// убираем только CRLF/ LF, чтобы сохранить возможные двоеточия в значениях
+		hline = strings.TrimRight(hline, "\r\n")
 		if hline == "" {
 			break // конец заголовков
 		}
 
-		if strings.HasPrefix(strings.ToLower(hline), "content-length:") {
-			clStr := strings.TrimSpace(hline[15:])
-			contentLength, _ = strconv.Atoi(clStr)
+		parts := strings.SplitN(hline, ":", 2)
+		if len(parts) != 2 {
+			fmt.Printf("Malformed-Header: %s\n", hline)
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		// красивый вывод в терминал
+		fmt.Printf("%-20s: %s\n", name, value)
+
+		if strings.ToLower(name) == "content-length" {
+			if cl, err := strconv.Atoi(value); err == nil {
+				contentLength = cl
+			}
 		}
 	}
 
 	// читаем тело ровно contentLength байт
 	if contentLength > 0 {
 		body := make([]byte, contentLength)
-		_, err := io.ReadFull(reader, body)
+		n, err := io.ReadFull(reader, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read body: %w", err)
 		}
 		req.Body = body
+		fmt.Printf("тело запроса (%d байт):\n%s\n", n, string(body))
+	} else {
+		fmt.Println("тело запроса: <пустое>")
 	}
 
 	// парсим query-параметры
+	// /my-api/v1/test?kqeqwkek&askdas=12313&fkdsfk=12
 	if idx := strings.Index(req.Path, "?"); idx != -1 {
 		rawQuery := req.Path[idx+1:]
 		req.Path = req.Path[:idx]
@@ -107,6 +133,7 @@ func HandleConnection(conn net.Conn, store *storage.Storage, cfg *config.Config)
 
 	case req.Method == "GET" && req.Path == base+"/users":
 		role := req.Query["role"]
+		//fmt.Print("role debug", role)
 		var users []model.User
 		if role == "" {
 			users = store.GetUsers()
@@ -191,7 +218,7 @@ func HandleConnection(conn net.Conn, store *storage.Storage, cfg *config.Config)
 
 	default:
 		logger.Log.Warn("неизвестный метод или путь", "method", req.Method, "path", req.Path)
-		sendStatus(conn, 404)
+		sendStatus(conn, 405)
 	}
 
 	logger.Log.Info("обработка запроса завершена", "address", conn.RemoteAddr())
@@ -215,6 +242,17 @@ func sendJSON(conn net.Conn, status int, data interface{}) {
 
 // sendStatus отправляет пустой ответ с кодом состояния
 func sendStatus(conn net.Conn, status int) {
-	resp := fmt.Sprintf("HTTP/1.1 %d\r\nContent-Length: 0\r\n\r\n", status)
-	conn.Write([]byte(resp))
+	statusText := map[int]string{
+		200: "OK",
+		201: "Created",
+		204: "No Content",
+		400: "Bad Request",
+		404: "Not Found",
+		405: "Method Not Allowed",
+	}[status]
+	if statusText == "" {
+		statusText = "Unknown"
+	}
+	resp := fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status, statusText)
+	_, _ = conn.Write([]byte(resp))
 }

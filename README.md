@@ -39,6 +39,12 @@ go build -o web-server ./cmd/web-server
 
 ### Запуск в Docker
 
+Важно: перед запуском создайте файл `.env` из примера `.env.example`:
+```bash
+cp .env.example .env  # скопировать пример
+# отредактируйте .env если нужно
+```
+
 Если вы предпочитаете контейнеры, в репозитории есть `Dockerfile` и `docker-compose.yml`. Ниже — два варианта запуска: минимальный (docker build + run) и рекомендуемый (docker-compose).
 
 Минимальный (быстро, через Docker CLI):
@@ -47,13 +53,13 @@ go build -o web-server ./cmd/web-server
 docker build -t web-server:latest .
 
 # Запустить контейнер (использует .env в корне)
-docker run --rm --env-file .env -p 8888:8888 --name web-server web-server:latest
+docker run --rm --env-file .env -p 8886:8886 --name web-server web-server:latest
 
 # В фоне
-docker run -d --env-file .env -p 8888:8888 --name web-server web-server:latest
+docker run -d --env-file .env -p 8886:8886 --name web-server web-server:latest
 
 # Если хотите сохранять логи на хосте (bind-mount)
-docker run -d --env-file .env -p 8888:8888 \
+docker run -d --env-file .env -p 8886:8886 \
 	-v "$(pwd)/server.log:/app/server.log" \
 	--name web-server web-server:latest
 
@@ -72,7 +78,7 @@ services:
 		env_file:
 			- .env
 		ports:
-			- "${PORT:-8888}:8888"
+			- "${PORT}:${PORT}"
 		volumes:
 			- ./server.log:/app/server.log   # опционально: сохранять логи на хосте
 		restart: unless-stopped
@@ -119,6 +125,7 @@ docker-compose down
 - 204 — удалено (DELETE)
 - 400 — некорректный запрос
 - 404 — не найдено
+- 405 — метод не разрешён
 - 500 — внутренняя ошибка сервера
 
 ---

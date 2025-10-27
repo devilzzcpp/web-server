@@ -1,24 +1,40 @@
 # Используем минимальный Go 1.23 образ
-FROM golang:1.23-alpine
+FROM golang:1.23-alpine AS builder
 
-# Рабочая директория внутри контейнера
+# Устанавливаем нужные инструменты
+RUN apk add --no-cache git ca-certificates
+
+# Рабочая директория
 WORKDIR /app
 
-# Копируем только файлы модулей и скачиваем зависимости для кеширования
+# Копируем модули и скачиваем зависимости
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Копируем весь проект
+# Копируем исходники
 COPY . .
 
-# Собираем приложение
+# Собираем бинарник
 RUN go build -o web-server ./cmd/server
 
-# Открываем порт, который использует сервер
-EXPOSE 8888
+
+FROM alpine:3.18
+
+# Устанавливаем сертификаты для HTTPS (если нужно)
+RUN apk add --no-cache ca-certificates
+
+# Рабочая директория
+WORKDIR /app
+
+# Копируем бинарник из builder
+COPY --from=builder /app/web-server ./
 
 # Создаём папку для логов
 RUN mkdir -p /app/logs
 
-# Команда запуска
-CMD ["./web-server"]
+# Порт из переменной окружения (по умолчанию 8886)
+ENV PORT=8886
+EXPOSE $PORT
+
+# Дефолтная команда запуска
+CMD ["sh", "-c", "./web-server --port=$PORT"]

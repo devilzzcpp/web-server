@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:8887/api/v1/users"
+BASE_URL="http://0.0.0.0:8886/api/v1/users"
 
 echo "=== GET all users ==="
 curl -s -X GET "$BASE_URL" -H "Accept: application/json"

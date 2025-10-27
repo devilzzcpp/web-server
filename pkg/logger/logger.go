@@ -19,7 +19,7 @@ type rotatingWriter struct {
 }
 
 func newRotatingWriter(filepath string) (*rotatingWriter, error) {
-	f, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	f, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (rw *rotatingWriter) Write(p []byte) (n int, err error) {
 		backupName := fmt.Sprintf("%s.%s", rw.filepath, time.Now().Format("20060102_150405"))
 		os.Rename(rw.filepath, backupName)
 
-		rw.file, err = os.OpenFile(rw.filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		rw.file, err = os.OpenFile(rw.filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			return 0, err
 		}

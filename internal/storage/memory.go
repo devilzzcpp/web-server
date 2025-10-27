@@ -37,9 +37,6 @@ func (m *Storage) CreateUser(user model.User) model.User {
 }
 
 func (m *Storage) GetUsers() []model.User {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	list := make([]model.User, 0, len(m.users))
 	for _, user := range m.users {
 		list = append(list, user)
@@ -48,9 +45,6 @@ func (m *Storage) GetUsers() []model.User {
 }
 
 func (m *Storage) GetUser(id int) (model.User, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	user, ok := m.users[id]
 	return user, ok
 }
@@ -86,9 +80,6 @@ func (m *Storage) DeleteUser(id int) bool {
 }
 
 func (m *Storage) GetUsersByRole(role string) []model.User {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	list := make([]model.User, 0)
 	for _, user := range m.users {
 		if user.Role == role {
