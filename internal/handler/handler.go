@@ -11,6 +11,7 @@ import (
 	"web-server/internal/config"
 	"web-server/internal/model"
 	"web-server/internal/storage"
+	"web-server/pkg/jwt"
 	"web-server/pkg/logger"
 )
 
@@ -20,16 +21,22 @@ type Request struct {
 	Version string
 	Query   map[string]string
 	Body    []byte
+	Uploads []*UploadReq
+	Headers map[string]string
+}
+
+type UploadReq struct {
+	Filename    string
+	Size        int
+	ContentType string
+	Content     string
 }
 
 // parseRequest читает HTTP-запрос из conn и возвращает Request
 func parseRequest(conn net.Conn) (*Request, error) {
 	reader := bufio.NewReader(conn)
-	//fmt.Print("строка запроса", string(reader))
-	// fmt.Println("zhopa")
-	// b, _ := reader.Peek(512) // возвращает []byte, не потребляя их
-	// fmt.Println(string(b))
-	// читаем первую строку запроса
+
+	// Читаем первую строку запроса: Method Path Version
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return nil, fmt.Errorf("failed to read request line: %w", err)
@@ -40,27 +47,22 @@ func parseRequest(conn net.Conn) (*Request, error) {
 		return nil, fmt.Errorf("invalid request line: %s", line)
 	}
 
-	version := parts[2]
-	if version != "HTTP/1.1" && version != "HTTP/1.0" {
-		return nil, fmt.Errorf(" неподдерживаемая версия HTTP: %s", version)
-	}
-
 	req := &Request{
 		Method:  parts[0],
 		Path:    parts[1],
-		Version: version,
+		Version: parts[2],
 		Query:   make(map[string]string),
+		Headers: make(map[string]string),
 	}
 
-	// читаем заголовки и ищем Content-Length
+	// Читаем заголовки
 	contentLength := 0
-	fmt.Println("Headers:")
+	contentType := ""
 	for {
 		hline, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, fmt.Errorf("failed to read header line: %w", err)
 		}
-		// убираем только CRLF/ LF, чтобы сохранить возможные двоеточия в значениях
 		hline = strings.TrimRight(hline, "\r\n")
 		if hline == "" {
 			break // конец заголовков
@@ -68,37 +70,41 @@ func parseRequest(conn net.Conn) (*Request, error) {
 
 		parts := strings.SplitN(hline, ":", 2)
 		if len(parts) != 2 {
-			fmt.Printf("Malformed-Header: %s\n", hline)
 			continue
 		}
+
 		name := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
-
-		// красивый вывод в терминал
-		fmt.Printf("%-20s: %s\n", name, value)
+		req.Headers[name] = value // <-- сохраняем заголовок
 
 		if strings.ToLower(name) == "content-length" {
 			if cl, err := strconv.Atoi(value); err == nil {
 				contentLength = cl
 			}
 		}
+		if strings.ToLower(name) == "content-type" {
+			contentType = value
+		}
 	}
 
-	// читаем тело ровно contentLength байт
+	// Читаем тело
 	if contentLength > 0 {
 		body := make([]byte, contentLength)
-		n, err := io.ReadFull(reader, body)
+		_, err := io.ReadFull(reader, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read body: %w", err)
 		}
 		req.Body = body
-		fmt.Printf("тело запроса (%d байт):\n%s\n", n, string(body))
-	} else {
-		fmt.Println("тело запроса: <пустое>")
 	}
 
-	// парсим query-параметры
-	// /my-api/v1/test?kqeqwkek&askdas=12313&fkdsfk=12
+	// Если multipart/form-data — разбираем файлы
+	if strings.Contains(strings.ToLower(contentType), "multipart/form-data") { //прочитать поподробнее
+		if err := parseMultipart(req, contentType); err != nil {
+			return nil, err
+		}
+	}
+
+	// Парсим query-параметры
 	if idx := strings.Index(req.Path, "?"); idx != -1 {
 		rawQuery := req.Path[idx+1:]
 		req.Path = req.Path[:idx]
@@ -108,9 +114,75 @@ func parseRequest(conn net.Conn) (*Request, error) {
 				req.Query[kv[0]] = kv[1]
 			}
 		}
+	} //проверить спец символы
+
+	fmt.Println("\nHeaders:")
+	for k, v := range req.Headers {
+		fmt.Printf("%-20s : %s\n", k, v)
 	}
 
+	if len(req.Body) > 0 {
+		fmt.Printf("тело запроса (%d байт):\n%s\n", len(req.Body), string(req.Body))
+	} else {
+		fmt.Println("тело запроса: <пустое>")
+	}
+	fmt.Println(strings.Repeat("-", 80))
+
 	return req, nil
+}
+
+func parseMultipart(req *Request, contentType string) error {
+	boundaryIdx := strings.Index(contentType, "boundary=")
+	if boundaryIdx == -1 {
+		return fmt.Errorf("missing boundary in multipart/form-data")
+	}
+
+	boundary := "--" + contentType[boundaryIdx+9:]
+	parts := strings.Split(string(req.Body), boundary)
+
+	for _, part := range parts {
+		part = strings.Trim(part, "\r\n")
+		if part == "" || part == "--" {
+			continue
+		}
+
+		lines := strings.Split(part, "\n")
+		var filename, partContentType string
+		ctStart := 0
+
+		for i, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				ctStart = i + 1
+				break
+			}
+			if strings.HasPrefix(line, "Content-Disposition:") {
+				if idx := strings.Index(line, "filename="); idx != -1 {
+					filename = strings.Trim(line[idx+9:], "\"")
+					filename = strings.TrimSpace(filename)
+				}
+			}
+			if strings.HasPrefix(strings.ToLower(line), "content-type:") {
+				partContentType = strings.TrimSpace(line[len("Content-Type:"):])
+			}
+		}
+
+		if partContentType == "" {
+			partContentType = "application/octet-stream"
+		}
+
+		fcontent := strings.Join(lines[ctStart:], "\n")
+		uploadF := &UploadReq{
+			Filename:    filename,
+			Size:        len(fcontent),
+			ContentType: partContentType,
+			Content:     fcontent,
+		}
+
+		req.Uploads = append(req.Uploads, uploadF)
+	}
+
+	return nil
 }
 
 // HandleConnection обрабатывает одно TCP соединение
@@ -164,12 +236,26 @@ func HandleConnection(conn net.Conn, store *storage.Storage, cfg *config.Config)
 		return
 
 	case req.Method == "POST" && req.Path == base+"/users":
+
+		if _, err := jwt.ParseToken(cfg, req.Headers); err != nil {
+			fmt.Print("недействительный токен", "error", err)
+			sendStatus(conn, 401)
+			return
+		}
+
 		var u model.User
 		if err := json.Unmarshal(req.Body, &u); err != nil {
 			logger.Log.Warn("некорректное тело запроса", "error", err)
 			sendStatus(conn, 400)
 			return
 		}
+		hashed, err := store.HashPassword(u.Password)
+		if err != nil {
+			logger.Log.Error("ошибка хэширования пароля", "error", err)
+			sendStatus(conn, 500)
+			return
+		}
+		u.Password = hashed
 		u.ID = 0
 		newUser := store.CreateUser(u)
 		sendJSON(conn, 201, newUser)
@@ -214,6 +300,60 @@ func HandleConnection(conn net.Conn, store *storage.Storage, cfg *config.Config)
 		}
 		logger.Log.Info("пользователь удален", "id", id)
 		sendStatus(conn, 204)
+		return
+
+	case req.Method == "POST" && req.Path == base+"/users/upload":
+		if len(req.Uploads) == 0 {
+			logger.Log.Warn("нет загруженных файлов")
+			sendStatus(conn, 400)
+			return
+		}
+
+		sendJSON(conn, 200, req.Uploads)
+
+	case req.Method == "POST" && req.Path == base+"/users/login":
+
+		var creds struct {
+			Login    string `json:"login"`
+			Password string `json:"password"`
+		}
+
+		if err := json.Unmarshal(req.Body, &creds); err != nil {
+			logger.Log.Warn("некорректное тело запроса", "error", err)
+			sendStatus(conn, 400)
+			return
+		}
+
+		user, ok := store.GetUserByLogin(creds.Login)
+		if !ok {
+			logger.Log.Warn("пользователь не найден", "login", creds.Login)
+			sendStatus(conn, 401)
+			return
+		}
+
+		if err := store.VerifyPassword(user.Password, creds.Password); err != nil {
+			logger.Log.Warn("неверный пароль", "login", creds.Login)
+			sendStatus(conn, 401)
+			return
+		}
+
+		token, err := jwt.GenerateToken(user.ID, cfg)
+		if err != nil {
+			logger.Log.Error("ошибка генерации токена", "error", err)
+			sendStatus(conn, 500)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"user": map[string]interface{}{
+				"id":       user.ID,
+				"username": user.Username,
+				"role":     user.Role,
+			},
+			"access_token": token,
+		}
+
+		sendJSON(conn, 200, resp)
 		return
 
 	default:

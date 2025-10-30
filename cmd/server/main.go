@@ -5,6 +5,7 @@ import (
 	"web-server/internal/config"
 	"web-server/internal/server"
 	"web-server/internal/storage"
+	"web-server/pkg/jwt"
 	"web-server/pkg/logger"
 )
 
@@ -20,6 +21,12 @@ func main() {
 		return
 	}
 	defer logger.CloseLogger()
+
+	token, err := jwt.GenerateToken(1, cfg) // где "1" — ID тестового пользователя
+	if err != nil {
+		logger.Log.Warn("ошибка генерации токена", "error", err)
+	}
+	fmt.Println("Тестовый токен:", token)
 
 	logger.Log.Info("Конфигурация загружена: ",
 		"host", cfg.Host,

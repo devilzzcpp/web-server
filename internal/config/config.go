@@ -4,6 +4,8 @@ import (
 	"os"
 	"strconv"
 
+	"web-server/pkg/logger"
+
 	"github.com/joho/godotenv"
 )
 
@@ -13,6 +15,8 @@ type Config struct {
 	LogLevel    string
 	LogFile     string
 	ApiBasePath string
+	JwtSecret   string
+	JwtExpires  int
 }
 
 // loadCfg загружает конфигурацию из файла
@@ -55,6 +59,23 @@ func LoadCfg() (*Config, error) {
 		ApiBasePath = "/api/v1"
 	}
 	cfg.ApiBasePath = ApiBasePath
+
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		logger.Log.Warn("JWT_SECRET НЕ УСТАНОВЛЕНО")
+		secret = "default_secret"
+	}
+	cfg.JwtSecret = secret
+
+	expiresStr := os.Getenv("JWT_EXPIRES_MIN")
+	if expiresStr == "" {
+		expiresStr = "60"
+	}
+	expires, err := strconv.Atoi(expiresStr)
+	if err != nil {
+		return nil, err
+	}
+	cfg.JwtExpires = expires
 
 	return cfg, nil
 }
