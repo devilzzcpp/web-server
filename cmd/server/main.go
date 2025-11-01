@@ -22,6 +22,17 @@ func main() {
 	}
 	defer logger.CloseLogger()
 
+	store, err := storage.NewStorage(cfg.DatabasePath)
+	if err != nil {
+		logger.Log.Error("не удалось подключиться к базе", "error", err)
+		return
+	}
+
+	if err := store.Migrate(); err != nil {
+		logger.Log.Error("не удалось применить миграции", "error", err)
+		return
+	}
+
 	token, err := jwt.GenerateToken(1, cfg) // где "1" — ID тестового пользователя
 	if err != nil {
 		logger.Log.Warn("ошибка генерации токена", "error", err)
@@ -34,11 +45,11 @@ func main() {
 		"log_level", cfg.LogLevel,
 		"log_file", cfg.LogFile)
 
-	storage := storage.NewStorage()
-	storage.SeedUsers()
-	logger.Log.Info("Хранилище пользователей инициализировано")
+	// storage := storage.NewStorage()
+	// storage.SeedUsers()
+	// logger.Log.Info("Хранилище пользователей инициализировано")
 
 	logger.Log.Info("Запуск сервера", "host", cfg.Host, "port", cfg.Port)
-	server.Start(cfg, storage)
+	server.Start(cfg, store)
 
 }

@@ -11,7 +11,8 @@ import (
 	"web-server/internal/config"
 	"web-server/internal/model"
 	"web-server/internal/storage"
-	"web-server/pkg/jwt"
+
+	//"web-server/pkg/jwt"
 	"web-server/pkg/logger"
 )
 
@@ -202,162 +203,69 @@ func HandleConnection(conn net.Conn, store *storage.Storage, cfg *config.Config)
 	base := cfg.ApiBasePath
 
 	switch {
-
+	// GET /users
 	case req.Method == "GET" && req.Path == base+"/users":
 		role := req.Query["role"]
-		//fmt.Print("role debug", role)
+		fmt.Println("role debug", role)
 		var users []model.User
 		if role == "" {
-			users = store.GetUsers()
+			users, err = store.GetUsers()
+			if err != nil {
+				logger.Log.Error("ошибка получения всех пользователей", "error", err)
+				sendStatus(conn, 500)
+				return
+			}
 			logger.Log.Info("получены все пользователи")
 		} else {
-			users = store.GetUsersByRole(role)
+			users, err = store.GetUsersByRole(role)
+			if err != nil {
+				logger.Log.Error("ошибка получения пользователей по роли", "role", role, "error", err)
+				sendStatus(conn, 500)
+				return
+			}
 			logger.Log.Info("получены пользователи по роли", "role", role)
 		}
 		sendJSON(conn, 200, users)
 		return
 
+	// GET /users/{id}
 	case req.Method == "GET" && strings.HasPrefix(req.Path, base+"/users/"):
 		idStr := strings.TrimPrefix(req.Path, base+"/users/")
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			logger.Log.Warn("некорректный ID пользователя", "error", err)
 			sendStatus(conn, 400)
 			return
 		}
-		user, ok := store.GetUser(id)
+		user, ok, err := store.GetUser(id)
+		if err != nil {
+			logger.Log.Error("ошибка SQL", "error", err)
+			sendStatus(conn, 500)
+			return
+		}
 		if !ok {
-			logger.Log.Warn("пользователь не найден", "id", id)
 			sendStatus(conn, 404)
 			return
 		}
-		logger.Log.Info("пользователь найден", "id", id)
 		sendJSON(conn, 200, user)
 		return
 
+	// POST /users
 	case req.Method == "POST" && req.Path == base+"/users":
-
-		if _, err := jwt.ParseToken(cfg, req.Headers); err != nil {
-			fmt.Print("недействительный токен", "error", err)
-			sendStatus(conn, 401)
-			return
-		}
-
 		var u model.User
 		if err := json.Unmarshal(req.Body, &u); err != nil {
-			logger.Log.Warn("некорректное тело запроса", "error", err)
 			sendStatus(conn, 400)
 			return
 		}
-		hashed, err := store.HashPassword(u.Password)
+		createdUser, err := store.CreateUser(u)
 		if err != nil {
-			logger.Log.Error("ошибка хэширования пароля", "error", err)
+			logger.Log.Error("ошибка создания пользователя", "error", err)
 			sendStatus(conn, 500)
 			return
 		}
-		u.Password = hashed
-		u.ID = 0
-		newUser := store.CreateUser(u)
-		sendJSON(conn, 201, newUser)
-		return
-
-	case req.Method == "PUT" && strings.HasPrefix(req.Path, base+"/users/"):
-		idStr := strings.TrimPrefix(req.Path, base+"/users/")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			logger.Log.Warn("некорректный ID пользователя", "error", err)
-			sendStatus(conn, 400)
-			return
-		}
-		var u model.User
-		if err := json.Unmarshal(req.Body, &u); err != nil {
-			logger.Log.Warn("некорректное тело запроса", "error", err)
-			sendStatus(conn, 400)
-			return
-		}
-		updatedUser, ok := store.UpdateUser(id, u)
-		if !ok {
-			logger.Log.Warn("пользователь не найден", "id", id)
-			sendStatus(conn, 404)
-			return
-		}
-		logger.Log.Info("пользователь обновлен", "id", id)
-		sendJSON(conn, 200, updatedUser)
-		return
-
-	case req.Method == "DELETE" && strings.HasPrefix(req.Path, base+"/users/"):
-		idStr := strings.TrimPrefix(req.Path, base+"/users/")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			logger.Log.Warn("некорректный ID пользователя", "error", err)
-			sendStatus(conn, 400)
-			return
-		}
-		if !store.DeleteUser(id) {
-			logger.Log.Warn("пользователь не найден", "id", id)
-			sendStatus(conn, 404)
-			return
-		}
-		logger.Log.Info("пользователь удален", "id", id)
-		sendStatus(conn, 204)
-		return
-
-	case req.Method == "POST" && req.Path == base+"/users/upload":
-		if len(req.Uploads) == 0 {
-			logger.Log.Warn("нет загруженных файлов")
-			sendStatus(conn, 400)
-			return
-		}
-
-		sendJSON(conn, 200, req.Uploads)
-
-	case req.Method == "POST" && req.Path == base+"/users/login":
-
-		var creds struct {
-			Login    string `json:"login"`
-			Password string `json:"password"`
-		}
-
-		if err := json.Unmarshal(req.Body, &creds); err != nil {
-			logger.Log.Warn("некорректное тело запроса", "error", err)
-			sendStatus(conn, 400)
-			return
-		}
-
-		user, ok := store.GetUserByLogin(creds.Login)
-		if !ok {
-			logger.Log.Warn("пользователь не найден", "login", creds.Login)
-			sendStatus(conn, 401)
-			return
-		}
-
-		if err := store.VerifyPassword(user.Password, creds.Password); err != nil {
-			logger.Log.Warn("неверный пароль", "login", creds.Login)
-			sendStatus(conn, 401)
-			return
-		}
-
-		token, err := jwt.GenerateToken(user.ID, cfg)
-		if err != nil {
-			logger.Log.Error("ошибка генерации токена", "error", err)
-			sendStatus(conn, 500)
-			return
-		}
-
-		resp := map[string]interface{}{
-			"user": map[string]interface{}{
-				"id":       user.ID,
-				"username": user.Username,
-				"role":     user.Role,
-			},
-			"access_token": token,
-		}
-
-		sendJSON(conn, 200, resp)
+		sendJSON(conn, 201, createdUser)
 		return
 
 	default:
-		logger.Log.Warn("неизвестный метод или путь", "method", req.Method, "path", req.Path)
 		sendStatus(conn, 405)
 	}
 

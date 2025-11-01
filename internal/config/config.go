@@ -10,13 +10,14 @@ import (
 )
 
 type Config struct {
-	Host        string
-	Port        int
-	LogLevel    string
-	LogFile     string
-	ApiBasePath string
-	JwtSecret   string
-	JwtExpires  int
+	Host         string
+	Port         int
+	LogLevel     string
+	LogFile      string
+	ApiBasePath  string
+	JwtSecret    string
+	JwtExpires   int
+	DatabasePath string
 }
 
 // loadCfg загружает конфигурацию из файла
@@ -76,6 +77,12 @@ func LoadCfg() (*Config, error) {
 		return nil, err
 	}
 	cfg.JwtExpires = expires
+
+	databasePath := os.Getenv("DATABASE_PATH")
+	if databasePath == "" {
+		databasePath = "web-serverDB.sqlite"
+	}
+	cfg.DatabasePath = databasePath
 
 	return cfg, nil
 }
